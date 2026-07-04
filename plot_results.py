@@ -2,16 +2,17 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+import math
 
 # 1. Đọc dữ liệu từ file CSV do chương trình C xuất ra
-csv_files = ["output/output_qpsk.csv",
-             "output/output_16qam.csv", "output/output_64qam.csv"]
+csv_files = ["output/output_ai_qpsk.csv",
+             "output/output_ai_16qam.csv", "output/output_ai_64qam.csv"]
 dfs = []
 
 for csv_file in csv_files:
     if not os.path.exists(csv_file):
         print(
-            f"Lỗi: Không tìm thấy file '{csv_file}'. Hãy chạy chương trình C trước!")
+            f"Lỗi: Không tìm thấy file '{csv_file}'.")
         exit()
 
     df = pd.read_csv(csv_file)
@@ -25,10 +26,12 @@ for csv_file in csv_files:
                  fontsize=16, fontweight='bold')
 
 # --- Biểu đồ 1: Tần số Doppler Lý thuyết vs Ước lượng ---
-    ax1.plot(df['SNR_dB'], df['True_Doppler_Hz'], 'g--',
-             linewidth=2, label='Doppler Lý Thuyết (True)')
-    ax1.plot(df['SNR_dB'], df['Est_Doppler_Hz'], 'b-o', linewidth=2,
-             markersize=6, label='Doppler Ước Lượng (Estimated)')
+    # ax1.plot(df['SNR_dB'], df['True_Doppler_Hz'], 'g--',
+    #          linewidth=2, label='Doppler Lý Thuyết (True)')
+    ax1.plot(df['SNR_dB'], (df['Est_Doppler_Hz'] - df['True_Doppler_Hz']).abs(), 'b-o', linewidth=2,
+             markersize=6, label='Doppler Ước Lượng (Estimated)'),
+    ax1.plot(df['SNR_dB'], (df['AI_Doppler_Hz'] - df['True_Doppler_Hz']).abs(), 'r-s', linewidth=2,
+             markersize=6, label='Doppler Ước Lượng AI (ANFIS)')
     ax1.set_title('Sai lệch Tần số Doppler qua các mức SNR')
     ax1.set_xlabel('Tỷ số Tín hiệu trên Nhiễu - SNR (dB)', fontsize=12)
     ax1.set_ylabel('Tần số Doppler (Hz)', fontsize=12)
@@ -39,6 +42,8 @@ for csv_file in csv_files:
 # Vẽ MSE trên thang đo Logarithmic để thấy rõ sự cải thiện ở SNR cao
     ax2.plot(df['SNR_dB'], df['MSE'], 'r-s', linewidth=2,
              markersize=6, label='Sai số toàn phương trung bình (MSE) -' + img_extension.upper())
+    ax2.plot(df['SNR_dB'], df['MSE_AI'], 'b-o', linewidth=2,
+             markersize=6, label='MSE của AI (ANFIS) -' + img_extension.upper())
     ax2.set_yscale('log')
     ax2.set_title('Độ Lỗi MSE của Thuật Toán Ước Lượng')
     ax2.set_xlabel('Tỷ số Tín hiệu trên Nhiễu - SNR (dB)', fontsize=12)
@@ -51,9 +56,43 @@ for csv_file in csv_files:
 
  # Lưu biểu đồ ra file ảnh định dạng chất lượng cao
 
-    output_img = f'output/doppler_evaluation_{img_extension}.png'
+    output_img = f'output/doppler_ai_evaluation_{img_extension}.png'
     plt.savefig(output_img, dpi=300)
     print(f"Đã lưu biểu đồ thành công vào: {output_img}")
 
  # Hiển thị biểu đồ lên màn hình
     plt.show()
+
+dfs = [pd.read_csv(f) for f in csv_files]
+
+
+fig, ax = plt.subplots(figsize=(8, 6))
+
+styles = {
+    "qpsk":  ("m-^", "QPSK"),
+    "16qam": ("c-o", "16QAM"),
+    "64qam": ("y-s", "64QAM")
+}
+
+for df, csv_file in zip(dfs, csv_files):
+    name = csv_file.lower()
+
+    for key, (style, label) in styles.items():
+        if key in name:
+            ax.plot(df["SNR_dB"],
+                    df["BER"],
+                    style,
+                    linewidth=2,
+                    markersize=6,
+                    label=label)
+            break
+
+ax.set_title("So sánh BER của các phương pháp điều chế")
+ax.set_xlabel("SNR (dB)")
+ax.set_ylabel("BER")
+ax.set_yscale("log")
+ax.grid(True, which="both", linestyle="--", alpha=0.7)
+ax.legend()
+plt.savefig("output/ber_comparison.png", dpi=300)
+
+plt.show()

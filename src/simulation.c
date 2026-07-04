@@ -3,6 +3,7 @@
 #include <time.h>
 #include "..\inc\config_utils.h"
 #include "..\inc\simulation.h"
+#include "..\inc\ai_estimator.h"
 
 extern void generate_random_bits(uint8_t *bits, int num_bits);
 extern void modulate_16qam(uint8_t *bits, float complex *symbols, int num_syms);
@@ -20,10 +21,13 @@ extern void extract_data_from_grid(float complex *rx_grid, float complex *rx_dat
 extern void demodulate_16qam_hard(float complex *rx_symbols, uint8_t *out_bits, int num_syms);
 extern void demodulate_qpsk_hard(float complex *rx_symbols, uint8_t *out_bits, int num_syms);
 extern void demodulate_64qam_hard(float complex *rx_symbols, uint8_t *out_bits, int num_syms);
+extern float ai_predict_doppler(AnfisEstimator *ai, float complex *rx_grid, float complex *tx_dmrs3, float complex *tx_dmrs11, int num_sc, float fs);
+extern void ai_estimator_free(AnfisEstimator *ai);
 
 int run_simulation(ModulationType mod_type, const char *output_file)
 {
     int bits_per_symbol;
+    AnfisEstimator *anfis_ai = ai_estimator_init("..\\scripts\\anfis_weights.txt");
 
     SimConfig config = {
         .velocity_kmph = 360.0f,
@@ -34,7 +38,7 @@ int run_simulation(ModulationType mod_type, const char *output_file)
     float true_fd = (config.velocity_kmph / 3.6f) * config.carrier_freq / 300000000.0f;
     int num_data_syms = NUM_SUBCARRIERS * (NUM_SYMBOLS - 2);
 
-        float complex *tx_qam = malloc(num_data_syms * sizeof(float complex));
+    float complex *tx_qam = malloc(num_data_syms * sizeof(float complex));
     float complex *tx_grid = calloc(NUM_SYMBOLS * FFT_SIZE, sizeof(float complex));
     float complex *rx_grid = calloc(NUM_SYMBOLS * FFT_SIZE, sizeof(float complex));
     float complex *time_sig = malloc(TOTAL_SAMPLES * sizeof(float complex));
@@ -74,7 +78,7 @@ int run_simulation(ModulationType mod_type, const char *output_file)
         printf("Loi: Khong the tao file CSV!\n");
         return -1;
     }
-    fprintf(fp, "SNR_dB,True_Doppler_Hz,Est_Doppler_Hz,MSE\n");
+    fprintf(fp, "SNR_dB,True_Doppler_Hz,Est_Doppler_Hz,AI_Doppler_Hz,MSE,MSE_AI,BER\n");
 
     printf("Bat dau mo phong 5G PUSCH Channel...\n");
     printf("Van toc: %.0f km/h | Tan so mang: 3.5 GHz | fD ly thuyet: %.2f Hz\n\n", config.velocity_kmph, true_fd);
@@ -84,7 +88,10 @@ int run_simulation(ModulationType mod_type, const char *output_file)
     {
         config.snr_db = snr;
         float total_mse = 0;
+        float total_ai_mse = 0;
         float avg_est_fd = 0;
+        float avg_ai_est_fd = 0;
+        float avg_ber = 0;
         int num_monte_carlo = NUM_MONTE_CARLO;
 
         for (int mc = 0; mc < num_monte_carlo; mc++)
@@ -114,12 +121,18 @@ int run_simulation(ModulationType mod_type, const char *output_file)
             // 3. Phía thu & Giải điều chế
             ofdm_demodulate(rx_time_sig, rx_grid);
 
-            // 4. Ước lượng Doppler
+            // 4.1 Ước lượng Doppler
             float est_fd = estimate_doppler_traditional(rx_grid, tx_dmrs3, tx_dmrs11, config.fs);
 
             avg_est_fd += est_fd;
             float error = est_fd - true_fd;
             total_mse += (error * error);
+
+            // 4.2 Ước lượng Doppler bằng ANFIS
+            float anfis_est_fd = ai_predict_doppler(anfis_ai, rx_grid, tx_dmrs3, tx_dmrs11, NUM_SUBCARRIERS, config.fs);
+            avg_ai_est_fd += anfis_est_fd;
+            float ai_error = anfis_est_fd - true_fd;
+            total_ai_mse += (ai_error * ai_error);
 
             // 5. Bóc tách dữ liệu
             extract_data_from_grid(rx_grid, rx_qam);
@@ -151,15 +164,22 @@ int run_simulation(ModulationType mod_type, const char *output_file)
                     bit_errors++;
                 }
             }
+            float ber = (float)bit_errors / total_bits;
+            avg_ber += ber;
         }
 
         // Tính trung bình
         avg_est_fd /= num_monte_carlo;
+        avg_ai_est_fd /= num_monte_carlo;
+        avg_ber /= num_monte_carlo;
         total_mse /= num_monte_carlo;
+        total_ai_mse /= num_monte_carlo;
 
         // Ghi ra màn hình và file CSV
         printf("SNR: %2d dB | Est fD: %7.2f Hz | MSE: %f\n", snr, avg_est_fd, total_mse);
-        fprintf(fp, "%d,%.2f,%.2f,%f\n", snr, true_fd, avg_est_fd, total_mse);
+        printf("SNR: %2d dB | ANFIS Est fD: %7.2f Hz | MSE: %f\n", snr, avg_ai_est_fd, total_ai_mse);
+        printf("SNR: %2d dB | BER: %f\n", snr, avg_ber);
+        fprintf(fp, "%d,%.2f,%.2f, %.2f, %f,%f,%f\n", snr, true_fd, avg_est_fd, avg_ai_est_fd, total_mse, total_ai_mse, avg_ber);
     }
 
     fclose(fp);
@@ -171,6 +191,7 @@ int run_simulation(ModulationType mod_type, const char *output_file)
     free(rx_time_sig);
     free(rx_qam);
     free(rx_bits);
+    ai_estimator_free(anfis_ai); // Giải phóng bộ ước lượng ANFIS
 
     printf("\nMo phong hoan tat! Ket qua da luu vao %s\n", output_file);
     return 0;
